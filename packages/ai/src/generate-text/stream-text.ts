@@ -1461,6 +1461,7 @@ class DefaultStreamTextResult<TOOLS extends ToolSet, OUTPUT extends Output>
             const streamWithToolResults = runToolsTransformation({
               tools,
               generatorStream: stream,
+              toolChoice: stepToolChoice,
               tracer,
               telemetry,
               system,

@@ -64,6 +64,7 @@ import { InferCompleteOutput } from './output-utils';
 import { parseToolCall } from './parse-tool-call';
 import { PrepareStepFunction } from './prepare-step';
 import { ResponseMessage } from './response-message';
+import { shouldFilterToolCall } from './should-filter-tool-call';
 import { DefaultStepResult, StepResult } from './step-result';
 import {
   isStopConditionMet,
@@ -676,6 +677,10 @@ export async function generateText<
                   (part): part is LanguageModelV3ToolCall =>
                     part.type === 'tool-call',
                 )
+                // Filter out extra tool calls when toolChoice forces a specific tool.
+                // This prevents infinite loops where the model returns multiple tool calls
+                // despite a forced toolChoice, causing repeated execution of unwanted tools.
+                .filter(part => !shouldFilterToolCall(stepToolChoice, part.toolName))
                 .map(toolCall =>
                   parseToolCall({
                     toolCall,
@@ -802,9 +807,16 @@ export async function generateText<
               }
             }
 
+            // Filter the response content to exclude extra tool calls when toolChoice
+            // forces a specific tool. This ensures the step content matches the filtered
+            // tool calls and prevents infinite loops in multi-step scenarios.
+            const stepResponseContent = currentModelResponse.content.filter(
+              part => part.type !== 'tool-call' || !shouldFilterToolCall(stepToolChoice, part.toolName)
+            );
+
             // content:
             const stepContent = asContent({
-              content: currentModelResponse.content,
+              content: stepResponseContent,
               toolCalls: stepToolCalls,
               toolOutputs: clientToolOutputs,
               toolApprovalRequests: Object.values(toolApprovalRequests),

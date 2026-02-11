@@ -1,4 +1,8 @@
-import { LanguageModelV3StreamPart, SharedV3Warning } from '@ai-sdk/provider';
+import {
+  LanguageModelV3StreamPart,
+  LanguageModelV3ToolChoice,
+  SharedV3Warning,
+} from '@ai-sdk/provider';
 import {
   getErrorMessage,
   IdGenerator,
@@ -15,6 +19,7 @@ import { executeToolCall } from './execute-tool-call';
 import { DefaultGeneratedFileWithType, GeneratedFile } from './generated-file';
 import { isApprovalNeeded } from './is-approval-needed';
 import { parseToolCall } from './parse-tool-call';
+import { shouldFilterToolCall } from './should-filter-tool-call';
 import { ToolApprovalRequestOutput } from './tool-approval-request-output';
 import { TypedToolCall } from './tool-call';
 import { ToolCallRepairFunction } from './tool-call-repair-function';
@@ -108,6 +113,7 @@ export type SingleRequestTextStreamPart<TOOLS extends ToolSet> =
 export function runToolsTransformation<TOOLS extends ToolSet>({
   tools,
   generatorStream,
+  toolChoice,
   tracer,
   telemetry,
   system,
@@ -119,6 +125,7 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 }: {
   tools: TOOLS | undefined;
   generatorStream: ReadableStream<LanguageModelV3StreamPart>;
+  toolChoice: LanguageModelV3ToolChoice | undefined;
   tracer: Tracer;
   telemetry: TelemetrySettings | undefined;
   system: string | SystemModelMessage | Array<SystemModelMessage> | undefined;
@@ -148,6 +155,10 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
   // keep track of parsed tool calls so provider-emitted approval requests can reference them
   const toolCallsByToolCallId = new Map<string, TypedToolCall<TOOLS>>();
+
+  // Track tool call IDs that should be filtered out when toolChoice forces a specific tool.
+  // This prevents infinite loops in streaming scenarios where extra tool calls are returned.
+  const ignoredToolCallIds = new Set<string>();
 
   let canClose = false;
   let finishChunk:
@@ -190,13 +201,29 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
         case 'reasoning-start':
         case 'reasoning-delta':
         case 'reasoning-end':
-        case 'tool-input-start':
-        case 'tool-input-delta':
-        case 'tool-input-end':
         case 'source':
         case 'response-metadata':
         case 'error':
         case 'raw': {
+          controller.enqueue(chunk);
+          break;
+        }
+
+        // When toolChoice forces a specific tool, filter out tool-input streams
+        // for extra tool calls to prevent infinite loops in streaming scenarios.
+        case 'tool-input-start': {
+          if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
+            ignoredToolCallIds.add(chunk.id);
+            break;
+          }
+          controller.enqueue(chunk);
+          break;
+        }
+        case 'tool-input-delta':
+        case 'tool-input-end': {
+          if (ignoredToolCallIds.has(chunk.id)) {
+            break;
+          }
           controller.enqueue(chunk);
           break;
         }
@@ -246,6 +273,13 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
         // process tool call:
         case 'tool-call': {
+          // Filter out extra tool calls when toolChoice forces a specific tool.
+          // This prevents infinite loops where the model returns multiple tool calls
+          // despite a forced toolChoice.
+          if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
+            break;
+          }
+
           try {
             const toolCall = await parseToolCall({
               toolCall: chunk,
