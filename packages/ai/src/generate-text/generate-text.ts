@@ -680,8 +680,11 @@ export async function generateText<
                   (part): part is LanguageModelV3ToolCall =>
                     part.type === 'tool-call',
                 )
-                // Filter out extra tool calls when toolChoice forces a specific tool.
-                // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+                // IMPORTANT: Filter out extra tool calls when toolChoice forces a specific tool.
+                // This prevents infinite loops where the model keeps calling the forced tool
+                // because we're also executing extra tools it returned. By only processing
+                // the forced tool, the loop can terminate when stop conditions are met.
+                // See filter-tool-calls.ts for detailed explanation.
                 .filter(
                   part => !shouldFilterToolCall(stepToolChoice, part.toolName),
                 )
@@ -811,8 +814,12 @@ export async function generateText<
               }
             }
 
-            // Filter response content to exclude extra tool calls when toolChoice forces a specific tool.
-            // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+            // IMPORTANT: Filter response content to exclude extra tool calls when toolChoice
+            // forces a specific tool. This prevents infinite loops by ensuring only the forced
+            // tool's call is added to response messages. If we included extra tool calls, the
+            // model would keep calling the forced tool indefinitely because we'd be executing
+            // and returning results for tools it shouldn't have called.
+            // See filter-tool-calls.ts for detailed explanation.
             const stepResponseContent = filterContentToolCalls(
               currentModelResponse.content,
               stepToolChoice,

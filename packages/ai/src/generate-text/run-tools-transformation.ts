@@ -209,10 +209,13 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
           break;
         }
 
-        // Filter tool-input streams when toolChoice forces a specific tool.
-        // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+        // IMPORTANT: Filter tool-input streams when toolChoice forces a specific tool.
+        // When a tool is forced, we ignore streaming chunks for any other tools to prevent
+        // infinite loops. We track ignored tool call IDs to filter their delta/end chunks too.
+        // See filter-tool-calls.ts for detailed explanation of the infinite loop problem.
         case 'tool-input-start': {
           if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
+            // This tool call doesn't match the forced tool - ignore it and all its chunks
             ignoredToolCallIds.add(chunk.id);
             break;
           }
@@ -221,6 +224,7 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
         }
         case 'tool-input-delta':
         case 'tool-input-end': {
+          // Skip delta/end chunks for tool calls we're ignoring
           if (ignoredToolCallIds.has(chunk.id)) {
             break;
           }
@@ -273,8 +277,11 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
         // process tool call:
         case 'tool-call': {
-          // Filter out extra tool calls when toolChoice forces a specific tool.
-          // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+          // IMPORTANT: Filter out extra tool calls when toolChoice forces a specific tool.
+          // This prevents infinite loops in streaming mode by ensuring only the forced tool
+          // is executed. If we processed extra tools, the model would keep calling the forced
+          // tool indefinitely because we'd be sending back results for unintended tools.
+          // See filter-tool-calls.ts for detailed explanation.
           if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
             break;
           }
