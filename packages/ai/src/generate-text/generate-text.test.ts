@@ -1913,6 +1913,88 @@ describe('generateText', () => {
       });
     });
 
+    describe('forced toolChoice filters extra tool calls from model response', () => {
+      let result: GenerateTextResult<any, any>;
+      let doGenerateCalls: Array<LanguageModelV3CallOptions>;
+
+      beforeEach(async () => {
+        doGenerateCalls = [];
+        let responseCount = 0;
+
+        result = await generateText({
+          model: new MockLanguageModelV3({
+            doGenerate: async args => {
+              doGenerateCalls.push(args);
+
+              switch (responseCount++) {
+                case 0:
+                  // Model returns two tool calls even though toolChoice
+                  // forces only tool1:
+                  return {
+                    ...dummyResponseValues,
+                    content: [
+                      {
+                        type: 'tool-call' as const,
+                        toolCallType: 'function' as const,
+                        toolCallId: 'call-1',
+                        toolName: 'tool1',
+                        input: '{ "value": "v1" }',
+                      },
+                      {
+                        type: 'tool-call' as const,
+                        toolCallType: 'function' as const,
+                        toolCallId: 'call-2',
+                        toolName: 'tool2',
+                        input: '{ "value": "v2" }',
+                      },
+                    ],
+                    finishReason: { unified: 'tool-calls', raw: undefined },
+                  };
+                case 1:
+                  return {
+                    ...dummyResponseValues,
+                    content: [{ type: 'text' as const, text: 'done' }],
+                  };
+                default:
+                  throw new Error(
+                    `Unexpected response count: ${responseCount}`,
+                  );
+              }
+            },
+          }),
+          tools: {
+            tool1: tool({
+              inputSchema: z.object({ value: z.string() }),
+              execute: async () => 'result1',
+            }),
+            tool2: tool({
+              inputSchema: z.object({ value: z.string() }),
+              execute: async () => 'result2',
+            }),
+          },
+          prompt: 'test-input',
+          stopWhen: stepCountIs(3),
+          prepareStep: async () => ({
+            toolChoice: { type: 'tool' as const, toolName: 'tool1' as const },
+          }),
+        });
+      });
+
+      it('should only process tool calls matching the forced tool', () => {
+        // Step 0 should have only tool1 call, not tool2:
+        const step0 = result.steps[0];
+        const toolCalls = step0.toolCalls;
+        expect(toolCalls).toHaveLength(1);
+        expect(toolCalls[0].toolName).toBe('tool1');
+      });
+
+      it('should complete without infinite loop', () => {
+        // Should have 2 steps: tool call + text response
+        expect(result.steps).toHaveLength(2);
+        expect(result.text).toBe('done');
+      });
+    });
+
     describe('2 stop conditions', () => {
       let result: GenerateTextResult<any, any>;
       let stopConditionCalls: Array<{

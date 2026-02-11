@@ -1,4 +1,8 @@
-import { LanguageModelV3StreamPart, SharedV3Warning } from '@ai-sdk/provider';
+import {
+  LanguageModelV3StreamPart,
+  LanguageModelV3ToolChoice,
+  SharedV3Warning,
+} from '@ai-sdk/provider';
 import {
   getErrorMessage,
   IdGenerator,
@@ -108,6 +112,7 @@ export type SingleRequestTextStreamPart<TOOLS extends ToolSet> =
 export function runToolsTransformation<TOOLS extends ToolSet>({
   tools,
   generatorStream,
+  toolChoice,
   tracer,
   telemetry,
   system,
@@ -119,6 +124,7 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 }: {
   tools: TOOLS | undefined;
   generatorStream: ReadableStream<LanguageModelV3StreamPart>;
+  toolChoice: LanguageModelV3ToolChoice | undefined;
   tracer: Tracer;
   telemetry: TelemetrySettings | undefined;
   system: string | SystemModelMessage | Array<SystemModelMessage> | undefined;
@@ -148,6 +154,10 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
   // keep track of parsed tool calls so provider-emitted approval requests can reference them
   const toolCallsByToolCallId = new Map<string, TypedToolCall<TOOLS>>();
+
+  // track tool call IDs that should be ignored (e.g. extra tool calls when
+  // toolChoice forces a specific tool):
+  const ignoredToolCallIds = new Set<string>();
 
   let canClose = false;
   let finishChunk:
@@ -190,13 +200,32 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
         case 'reasoning-start':
         case 'reasoning-delta':
         case 'reasoning-end':
-        case 'tool-input-start':
-        case 'tool-input-delta':
-        case 'tool-input-end':
         case 'source':
         case 'response-metadata':
         case 'error':
         case 'raw': {
+          controller.enqueue(chunk);
+          break;
+        }
+
+        // When toolChoice forces a specific tool, track which tool-input
+        // streams to skip so extra tool calls don't cause infinite loops:
+        case 'tool-input-start': {
+          if (
+            toolChoice?.type === 'tool' &&
+            chunk.toolName !== toolChoice.toolName
+          ) {
+            ignoredToolCallIds.add(chunk.id);
+            break;
+          }
+          controller.enqueue(chunk);
+          break;
+        }
+        case 'tool-input-delta':
+        case 'tool-input-end': {
+          if (ignoredToolCallIds.has(chunk.id)) {
+            break;
+          }
           controller.enqueue(chunk);
           break;
         }
@@ -246,6 +275,16 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
         // process tool call:
         case 'tool-call': {
+          // When toolChoice forces a specific tool, filter out any
+          // extra tool calls the model may have returned to prevent
+          // the tool-result loop from continuing indefinitely:
+          if (
+            toolChoice?.type === 'tool' &&
+            chunk.toolName !== toolChoice.toolName
+          ) {
+            break;
+          }
+
           try {
             const toolCall = await parseToolCall({
               toolCall: chunk,

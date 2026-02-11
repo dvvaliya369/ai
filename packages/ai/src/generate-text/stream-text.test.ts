@@ -7867,6 +7867,109 @@ describe('streamText', () => {
       });
     });
 
+    describe('forced toolChoice filters extra tool calls from model response', () => {
+      let result: StreamTextResult<any, any>;
+      let doStreamCalls: Array<LanguageModelV3CallOptions>;
+
+      beforeEach(async () => {
+        doStreamCalls = [];
+
+        result = streamText({
+          model: new MockLanguageModelV3({
+            doStream: async options => {
+              doStreamCalls.push(options);
+              switch (doStreamCalls.length) {
+                case 1:
+                  // Model returns two tool calls even though toolChoice
+                  // forces only tool1:
+                  return {
+                    stream: convertArrayToReadableStream([
+                      {
+                        type: 'tool-call' as const,
+                        toolCallId: 'call-1',
+                        toolName: 'tool1',
+                        input: '{ "value": "v1" }',
+                      },
+                      {
+                        type: 'tool-call' as const,
+                        toolCallId: 'call-2',
+                        toolName: 'tool2',
+                        input: '{ "value": "v2" }',
+                      },
+                      {
+                        type: 'finish' as const,
+                        finishReason: {
+                          unified: 'tool-calls' as const,
+                          raw: undefined,
+                        },
+                        usage: testUsage,
+                      },
+                    ]),
+                    response: {},
+                  };
+                case 2:
+                  return {
+                    stream: convertArrayToReadableStream([
+                      { type: 'text-start' as const, id: '1' },
+                      {
+                        type: 'text-delta' as const,
+                        id: '1',
+                        delta: 'done',
+                      },
+                      { type: 'text-end' as const, id: '1' },
+                      {
+                        type: 'finish' as const,
+                        finishReason: {
+                          unified: 'stop' as const,
+                          raw: 'stop',
+                        },
+                        usage: testUsage,
+                      },
+                    ]),
+                    response: {},
+                  };
+                default:
+                  throw new Error(
+                    `Unexpected response count: ${doStreamCalls.length}`,
+                  );
+              }
+            },
+          }),
+          tools: {
+            tool1: tool({
+              inputSchema: z.object({ value: z.string() }),
+              execute: async () => 'result1',
+            }),
+            tool2: tool({
+              inputSchema: z.object({ value: z.string() }),
+              execute: async () => 'result2',
+            }),
+          },
+          ...defaultSettings(),
+          prompt: 'test-input',
+          stopWhen: stepCountIs(3),
+          prepareStep: async () => ({
+            toolChoice: { type: 'tool' as const, toolName: 'tool1' as const },
+          }),
+        });
+      });
+
+      it('should only process tool calls matching the forced tool', async () => {
+        const parts = await convertAsyncIterableToArray(result.fullStream);
+        const toolCallParts = parts.filter(
+          (p): p is Extract<(typeof parts)[number], { type: 'tool-call' }> =>
+            p.type === 'tool-call',
+        );
+        expect(toolCallParts).toHaveLength(1);
+        expect(toolCallParts[0].toolName).toBe('tool1');
+      });
+
+      it('should complete without infinite loop', async () => {
+        const text = await result.text;
+        expect(text).toBe('done');
+      });
+    });
+
     describe('2 steps: initial, tool-result with transformed tool results', () => {
       const upperCaseToolResultTransform = () =>
         new TransformStream<

@@ -676,6 +676,14 @@ export async function generateText<
                   (part): part is LanguageModelV3ToolCall =>
                     part.type === 'tool-call',
                 )
+                // When toolChoice forces a specific tool, filter out any
+                // extra tool calls the model may have returned to prevent
+                // the tool-result loop from continuing indefinitely:
+                .filter(
+                  part =>
+                    stepToolChoice?.type !== 'tool' ||
+                    part.toolName === stepToolChoice.toolName,
+                )
                 .map(toolCall =>
                   parseToolCall({
                     toolCall,
@@ -802,9 +810,20 @@ export async function generateText<
               }
             }
 
+            // When toolChoice forces a specific tool, filter the raw content
+            // to exclude extra tool calls the model may have returned:
+            const stepResponseContent =
+              stepToolChoice?.type === 'tool'
+                ? currentModelResponse.content.filter(
+                    part =>
+                      part.type !== 'tool-call' ||
+                      part.toolName === stepToolChoice.toolName,
+                  )
+                : currentModelResponse.content;
+
             // content:
             const stepContent = asContent({
-              content: currentModelResponse.content,
+              content: stepResponseContent,
               toolCalls: stepToolCalls,
               toolOutputs: clientToolOutputs,
               toolApprovalRequests: Object.values(toolApprovalRequests),
