@@ -16,6 +16,7 @@ import { FinishReason, LanguageModelUsage, ProviderMetadata } from '../types';
 import { Source } from '../types/language-model';
 import { asLanguageModelUsage } from '../types/usage';
 import { executeToolCall } from './execute-tool-call';
+import { shouldFilterToolCall } from './filter-tool-calls';
 import { DefaultGeneratedFileWithType, GeneratedFile } from './generated-file';
 import { isApprovalNeeded } from './is-approval-needed';
 import { parseToolCall } from './parse-tool-call';
@@ -155,8 +156,8 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
   // keep track of parsed tool calls so provider-emitted approval requests can reference them
   const toolCallsByToolCallId = new Map<string, TypedToolCall<TOOLS>>();
 
-  // track tool call IDs that should be ignored (e.g. extra tool calls when
-  // toolChoice forces a specific tool):
+  // Track tool call IDs that should be ignored when toolChoice forces a specific tool.
+  // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
   const ignoredToolCallIds = new Set<string>();
 
   let canClose = false;
@@ -208,13 +209,10 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
           break;
         }
 
-        // When toolChoice forces a specific tool, track which tool-input
-        // streams to skip so extra tool calls don't cause infinite loops:
+        // Filter tool-input streams when toolChoice forces a specific tool.
+        // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
         case 'tool-input-start': {
-          if (
-            toolChoice?.type === 'tool' &&
-            chunk.toolName !== toolChoice.toolName
-          ) {
+          if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
             ignoredToolCallIds.add(chunk.id);
             break;
           }
@@ -275,13 +273,9 @@ export function runToolsTransformation<TOOLS extends ToolSet>({
 
         // process tool call:
         case 'tool-call': {
-          // When toolChoice forces a specific tool, filter out any
-          // extra tool calls the model may have returned to prevent
-          // the tool-result loop from continuing indefinitely:
-          if (
-            toolChoice?.type === 'tool' &&
-            chunk.toolName !== toolChoice.toolName
-          ) {
+          // Filter out extra tool calls when toolChoice forces a specific tool.
+          // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+          if (shouldFilterToolCall(toolChoice, chunk.toolName)) {
             break;
           }
 

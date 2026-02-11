@@ -56,6 +56,10 @@ import { ContentPart } from './content-part';
 import { executeToolCall } from './execute-tool-call';
 import { extractReasoningContent } from './extract-reasoning-content';
 import { extractTextContent } from './extract-text-content';
+import {
+  filterContentToolCalls,
+  shouldFilterToolCall,
+} from './filter-tool-calls';
 import { GenerateTextResult } from './generate-text-result';
 import { DefaultGeneratedFile } from './generated-file';
 import { isApprovalNeeded } from './is-approval-needed';
@@ -676,13 +680,10 @@ export async function generateText<
                   (part): part is LanguageModelV3ToolCall =>
                     part.type === 'tool-call',
                 )
-                // When toolChoice forces a specific tool, filter out any
-                // extra tool calls the model may have returned to prevent
-                // the tool-result loop from continuing indefinitely:
+                // Filter out extra tool calls when toolChoice forces a specific tool.
+                // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
                 .filter(
-                  part =>
-                    stepToolChoice?.type !== 'tool' ||
-                    part.toolName === stepToolChoice.toolName,
+                  part => !shouldFilterToolCall(stepToolChoice, part.toolName),
                 )
                 .map(toolCall =>
                   parseToolCall({
@@ -810,16 +811,12 @@ export async function generateText<
               }
             }
 
-            // When toolChoice forces a specific tool, filter the raw content
-            // to exclude extra tool calls the model may have returned:
-            const stepResponseContent =
-              stepToolChoice?.type === 'tool'
-                ? currentModelResponse.content.filter(
-                    part =>
-                      part.type !== 'tool-call' ||
-                      part.toolName === stepToolChoice.toolName,
-                  )
-                : currentModelResponse.content;
+            // Filter response content to exclude extra tool calls when toolChoice forces a specific tool.
+            // See filter-tool-calls.ts for detailed explanation of why this prevents infinite loops.
+            const stepResponseContent = filterContentToolCalls(
+              currentModelResponse.content,
+              stepToolChoice,
+            );
 
             // content:
             const stepContent = asContent({

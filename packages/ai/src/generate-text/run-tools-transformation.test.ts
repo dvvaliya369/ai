@@ -1027,6 +1027,176 @@ describe('runToolsTransformation', () => {
     });
   });
 
+  describe('forced toolChoice filters extra tool calls', () => {
+    it('should filter out tool calls that do not match the forced tool name', async () => {
+      const inputStream: ReadableStream<LanguageModelV3StreamPart> =
+        convertArrayToReadableStream([
+          {
+            type: 'tool-input-start',
+            id: 'call-1',
+            toolName: 'tool1',
+          },
+          {
+            type: 'tool-input-delta',
+            id: 'call-1',
+            delta: '{ "value": "v1" }',
+          },
+          {
+            type: 'tool-input-end',
+            id: 'call-1',
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call-1',
+            toolName: 'tool1',
+            input: '{ "value": "v1" }',
+          },
+          // Extra tool call that should be filtered:
+          {
+            type: 'tool-input-start',
+            id: 'call-2',
+            toolName: 'tool2',
+          },
+          {
+            type: 'tool-input-delta',
+            id: 'call-2',
+            delta: '{ "value": "v2" }',
+          },
+          {
+            type: 'tool-input-end',
+            id: 'call-2',
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call-2',
+            toolName: 'tool2',
+            input: '{ "value": "v2" }',
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: undefined },
+            usage: testUsage,
+          },
+        ]);
+
+      const transformedStream = runToolsTransformation({
+        generateId: mockId({ prefix: 'id' }),
+        tools: {
+          tool1: tool({
+            inputSchema: z.object({ value: z.string() }),
+            execute: async () => 'result1',
+          }),
+          tool2: tool({
+            inputSchema: z.object({ value: z.string() }),
+            execute: async () => 'result2',
+          }),
+        },
+        generatorStream: inputStream,
+        toolChoice: { type: 'tool', toolName: 'tool1' },
+        tracer: new MockTracer(),
+        telemetry: undefined,
+        messages: [],
+        system: undefined,
+        abortSignal: undefined,
+        repairToolCall: undefined,
+        experimental_context: undefined,
+      });
+
+      const result = await convertReadableStreamToArray(transformedStream);
+
+      // Should only have tool1 call and result, not tool2:
+      const toolCalls = result.filter(r => r.type === 'tool-call');
+      const toolResults = result.filter(r => r.type === 'tool-result');
+      const toolInputStarts = result.filter(r => r.type === 'tool-input-start');
+
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0]).toMatchObject({
+        type: 'tool-call',
+        toolName: 'tool1',
+        toolCallId: 'call-1',
+      });
+
+      expect(toolResults).toHaveLength(1);
+      expect(toolResults[0]).toMatchObject({
+        type: 'tool-result',
+        toolName: 'tool1',
+        toolCallId: 'call-1',
+      });
+
+      expect(toolInputStarts).toHaveLength(1);
+      expect(toolInputStarts[0]).toMatchObject({
+        type: 'tool-input-start',
+        toolName: 'tool1',
+        id: 'call-1',
+      });
+
+      // Verify tool2 was completely filtered out:
+      const tool2Parts = result.filter(
+        r =>
+          (r.type === 'tool-call' && r.toolName === 'tool2') ||
+          (r.type === 'tool-result' && r.toolName === 'tool2') ||
+          (r.type === 'tool-input-start' && r.toolName === 'tool2') ||
+          (r.type === 'tool-input-delta' && r.id === 'call-2') ||
+          (r.type === 'tool-input-end' && r.id === 'call-2'),
+      );
+      expect(tool2Parts).toHaveLength(0);
+    });
+
+    it('should not filter when toolChoice is auto', async () => {
+      const inputStream: ReadableStream<LanguageModelV3StreamPart> =
+        convertArrayToReadableStream([
+          {
+            type: 'tool-call',
+            toolCallId: 'call-1',
+            toolName: 'tool1',
+            input: '{ "value": "v1" }',
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call-2',
+            toolName: 'tool2',
+            input: '{ "value": "v2" }',
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: undefined },
+            usage: testUsage,
+          },
+        ]);
+
+      const transformedStream = runToolsTransformation({
+        generateId: mockId({ prefix: 'id' }),
+        tools: {
+          tool1: tool({
+            inputSchema: z.object({ value: z.string() }),
+            execute: async () => 'result1',
+          }),
+          tool2: tool({
+            inputSchema: z.object({ value: z.string() }),
+            execute: async () => 'result2',
+          }),
+        },
+        generatorStream: inputStream,
+        toolChoice: { type: 'auto' },
+        tracer: new MockTracer(),
+        telemetry: undefined,
+        messages: [],
+        system: undefined,
+        abortSignal: undefined,
+        repairToolCall: undefined,
+        experimental_context: undefined,
+      });
+
+      const result = await convertReadableStreamToArray(transformedStream);
+
+      // Should have both tool calls when toolChoice is auto:
+      const toolCalls = result.filter(r => r.type === 'tool-call');
+      expect(toolCalls).toHaveLength(2);
+      expect(toolCalls[0].toolName).toBe('tool1');
+      expect(toolCalls[1].toolName).toBe('tool2');
+    });
+  });
+
   describe('tool execution error handling', () => {
     it('should handle error thrown in async tool execution', async () => {
       const inputStream: ReadableStream<LanguageModelV3StreamPart> =
